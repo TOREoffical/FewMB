@@ -16,9 +16,7 @@ jobs:
         shell: pwsh
         run: |
           $zipFile = Get-ChildItem -Filter "*.zip" | Select-Object -First 1
-          if ($zipFile) {
-            Expand-Archive -Path $zipFile.FullName -DestinationPath "project_source" -Force
-          }
+          if ($zipFile) { Expand-Archive -Path $zipFile.FullName -DestinationPath "project_source" -Force }
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -29,41 +27,47 @@ jobs:
         shell: pwsh
         run: nuget install Microsoft.Web.WebView2 -OutputDirectory packages
 
-      - name: Configure and Patch CMake
+      - name: Patch and Configure CMake
         shell: pwsh
         run: |
           $cmakeFile = Get-ChildItem -Recurse -Filter "CMakeLists.txt" | Select-Object -First 1
           $sourceDir = $cmakeFile.Directory.FullName
           
-          # Hatalı olan -Wextra bayrağını MSVC uyumlu hale getirmek için dosyayı geçici olarak düzenliyoruz
-          (Get-Content $cmakeFile.FullName) -replace '-Wextra', '/W4' | Set-Content $cmakeFile.FullName
+          # MSVC uyumsuz bayrakları temizle (GCC -> MSVC dönüşümü)
+          $content = Get-Content $cmakeFile.FullName
+          $content = $content -replace '-Wextra', '/W4'
+          $content = $content -replace '-Wall', '/W3'
+          $content = $content -replace '-O3', '/O2'
+          $content | Set-Content $cmakeFile.FullName
           
+          # WebView2 yollarını kesinleştir
           $wv2_dir = Get-ChildItem -Directory -Path "packages/Microsoft.Web.WebView2.*" | Select-Object -First 1
-          $wv2_path = $wv2_dir.FullName
+          $inc_path = Join-Path $wv2_dir.FullName "build/native/include"
+          $lib_path = Join-Path $wv2_dir.FullName "build/native/x64/WebView2Loader.dll.lib"
           
-          # WebView2_FOUND değerini zorunlu kılıp yolları netleştiriyoruz
+          # CMake konfigürasyonu
           cmake -S "$sourceDir" -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -A x64 `
-            "-DWebView2_FOUND=TRUE" `
-            "-DWebView2_INCLUDE_DIR=$wv2_path/build/native/include" `
-            "-DWebView2_LIBRARIES=$wv2_path/build/native/x64/WebView2Loader.dll.lib"
+            "-DWebView2_INCLUDE_DIR=$inc_path" `
+            "-DWebView2_LIBRARIES=$lib_path" `
+            "-DCMAKE_PREFIX_PATH=$wv2_dir.FullName"
 
       - name: Build
         shell: pwsh
-        run: cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
+        run: |
+          # Include dizinini ortam değişkeni olarak ekleyerek C1083 hatasını önlüyoruz
+          $wv2_dir = Get-ChildItem -Directory -Path "packages/Microsoft.Web.WebView2.*" | Select-Object -First 1
+          $env:INCLUDE += ";$(Join-Path $wv2_dir.FullName 'build/native/include')"
+          cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
 
       - name: Prepare Artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "dist"
-          
-          # Binary dosyasını kontrol et ve kopyala
-          if (Test-Path "build/bin/Release/FewMB.exe") {
-            Copy-Item "build/bin/Release/FewMB.exe" -Destination "dist/"
-          } elseif (Test-Path "build/Release/FewMB.exe") {
-            Copy-Item "build/Release/FewMB.exe" -Destination "dist/"
-          }
+          # Çıktı yollarını kontrol et
+          $exePath = Get-ChildItem -Path "build" -Recurse -Filter "FewMB.exe" | Where-Object { $_.FullName -like "*Release*" } | Select-Object -First 1
+          if ($exePath) { Copy-Item $exePath.FullName -Destination "dist/" }
           
           $dll = Get-ChildItem -Path "packages" -Recurse -Filter "WebView2Loader.dll" | Where-Object { $_.FullName -like "*x64*" } | Select-Object -First 1
           if ($dll) { Copy-Item $dll.FullName -Destination "dist/" }
@@ -71,8 +75,7 @@ jobs:
           if (Test-Path "dist/FewMB.exe") {
             Compress-Archive -Path "dist/*" -DestinationPath "FewMB-Windows-x64.zip" -Force
           } else {
-            Write-Error "Build basarili oldu ama EXE bulunamadi!"
-            exit 1
+            throw "Build bitti ama EXE dosyasi hiçbir yerde bulunamadi!"
           }
 
       - name: Upload
