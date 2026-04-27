@@ -3,8 +3,8 @@ name: Build FewMB
 on:
   push:
     branches: [ main ]
-  tags:
-    - 'v*'
+    tags:
+      - 'v*'
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -20,42 +20,43 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup MSVC
-        uses: egorBaykov/setup-msvc@v1
+        uses: ilammy/msvc-dev-cmd@v1 # Daha güncel ve stabil bir alternatif
         with:
           arch: x64
 
-      - name: Get CMake
-        uses: lukka/get-cmake@latest
-
-      - name: Configure
+      - name: Configure CMake
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path build
-          Set-Location build
-          cmake .. -DCMAKE_BUILD_TYPE=Release -A x64
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -A x64
 
       - name: Build
         shell: pwsh
         run: |
-          Set-Location build
-          cmake --build . --config Release -j$(nproc) 2>&1
+          # Windows'ta paralel build için NUMBER_OF_PROCESSORS kullanılır
+          cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
 
       - name: Copy Runtime DLLs
         shell: pwsh
         run: |
+          # Dizin yoksa oluştur (hata almamak için)
+          New-Item -ItemType Directory -Force -Path build/bin/Release
           $wv2Path = "C:\Program Files (x86)\Microsoft\EdgeWebView\Application"
           if (Test-Path $wv2Path) {
-            Copy-Item "$wv2Path\WebView2Loader.dll" "build\bin\Release\" -ErrorAction SilentlyContinue
+             # En güncel klasörü bulup içinden DLL'i alıyoruz
+             $dll = Get-ChildItem -Path $wv2Path -Recurse -Filter "WebView2Loader.dll" | Select-Object -First 1
+             if ($dll) { Copy-Item $dll.FullName "build/bin/Release/" }
           }
 
       - name: Package
         shell: pwsh
         run: |
-          Compress-Archive -Path "build\bin\Release\*" -DestinationPath "FewMB-Windows-x64.zip" -Force
-          Write-Host "##[group]Artifact"
-          Write-Host "File: FewMB-Windows-x64.zip"
-          Write-Host "Size: $((Get-Item 'FewMB-Windows-x64.zip').Length / 1MB) MB"
-          Write-Host "##[endgroup]"
+          # Klasörün varlığından emin olalım
+          if (Test-Path "build/bin/Release") {
+            Compress-Archive -Path "build/bin/Release/*" -DestinationPath "FewMB-Windows-x64.zip" -Force
+          } else {
+            Write-Error "Build output directory not found!"
+            exit 1
+          }
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -69,16 +70,14 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
-
     steps:
       - name: Download Artifact
         uses: actions/download-artifact@v4
         with:
           name: FewMB-Windows-x64
-          path: .
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2 # v2'ye güncellendi
         with:
           files: FewMB-Windows-x64.zip
           draft: false
