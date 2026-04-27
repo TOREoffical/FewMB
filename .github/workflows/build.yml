@@ -9,17 +9,12 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-env:
-  PROJECT_NAME: FewMB
-
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -29,17 +24,23 @@ jobs:
       - name: Install WebView2 SDK
         shell: pwsh
         run: |
-          # WebView2 paketini indiriyoruz çünkü standart imajda eksik olabilir
+          # WebView2 paketini nuget üzerinden indiriyoruz
           nuget install Microsoft.Web.WebView2 -OutputDirectory packages
 
       - name: Configure CMake
         shell: pwsh
         run: |
-          # NuGet paketinin yolunu CMake'e tanıtıyoruz
+          # Projenin nerede olduğunu (alt klasör ihtimaline karşı) otomatik bulalım
+          $cmakeFile = Get-ChildItem -Recurse -Filter "CMakeLists.txt" | Select-Object -First 1
+          if (-not $cmakeFile) { throw "CMakeLists.txt bulunamadı!" }
+          $sourceDir = $cmakeFile.Directory.FullName
+          
+          # İndirdiğimiz WebView2 klasörünü bulalım
           $wv2_dir = Get-ChildItem -Directory -Path "packages/Microsoft.Web.WebView2.*" | Select-Object -First 1
           $wv2_path = $wv2_dir.FullName
           
-          cmake -S . -B build `
+          # CMake'e hem kaynak dizini hem de WebView2 yollarını veriyoruz
+          cmake -S "$sourceDir" -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -A x64 `
             "-DWebView2_INCLUDE_DIR=$wv2_path/build/native/include" `
@@ -47,25 +48,20 @@ jobs:
 
       - name: Build
         shell: pwsh
-        run: |
-          cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
+        run: cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
 
-      - name: Prepare Artifacts
+      - name: Prepare Package
         shell: pwsh
         run: |
-          # Çıktı klasörünü oluştur
           New-Item -ItemType Directory -Force -Path "dist"
           
-          # Çalıştırılabilir dosyayı kopyala
-          Copy-Item "build/bin/Release/FewMB.exe" -Destination "dist/" -ErrorAction Continue
+          # EXE dosyasını kopyala (CMakeLists'te bin klasörüne çıkacak şekilde ayarlı)
+          Copy-Item "build/bin/Release/FewMB.exe" -Destination "dist/"
           
-          # Gerekli WebView2 DLL'ini bul ve yanına koy
-          $wv2_dll = Get-ChildItem -Path "packages/Microsoft.Web.WebView2.*" -Recurse -Filter "WebView2Loader.dll" | Where-Object { $_.FullName -like "*x64*" } | Select-Object -First 1
-          if ($wv2_dll) {
-            Copy-Item $wv2_dll.FullName -Destination "dist/"
-          }
+          # WebView2Loader.dll dosyasını bul ve yanına koy (Çalışması için şart)
+          $dll = Get-ChildItem -Path "packages" -Recurse -Filter "WebView2Loader.dll" | Where-Object { $_.FullName -like "*x64*" } | Select-Object -First 1
+          Copy-Item $dll.FullName -Destination "dist/"
           
-          # Paketi sıkıştır
           Compress-Archive -Path "dist/*" -DestinationPath "FewMB-Windows-x64.zip" -Force
 
       - name: Upload Artifact
@@ -81,16 +77,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download Artifact
+      - name: Download
         uses: actions/download-artifact@v4
         with:
           name: FewMB-Windows-x64
-
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: FewMB-Windows-x64.zip
-          draft: false
-          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
