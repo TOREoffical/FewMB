@@ -15,13 +15,9 @@ jobs:
       - name: Extract Project Files
         shell: pwsh
         run: |
-          # Ana dizindeki tüm .zip dosyalarını bul ve 'project_files' klasörüne çıkart
           $zipFile = Get-ChildItem -Filter "*.zip" | Select-Object -First 1
           if ($zipFile) {
             Expand-Archive -Path $zipFile.FullName -DestinationPath "project_source" -Force
-            Write-Host "Dosyalar project_source klasörüne çıkartıldı."
-          } else {
-            Write-Warning "Ana dizinde zip dosyası bulunamadı, mevcut dosyalarla devam ediliyor."
           }
 
       - name: Setup MSVC
@@ -33,20 +29,23 @@ jobs:
         shell: pwsh
         run: nuget install Microsoft.Web.WebView2 -OutputDirectory packages
 
-      - name: Configure CMake
+      - name: Configure and Patch CMake
         shell: pwsh
         run: |
-          # CMakeLists.txt dosyasını çıkartılan klasörde ara
           $cmakeFile = Get-ChildItem -Recurse -Filter "CMakeLists.txt" | Select-Object -First 1
-          if (-not $cmakeFile) { throw "HATA: Zip içinden CMakeLists.txt çıkmadı!" }
           $sourceDir = $cmakeFile.Directory.FullName
+          
+          # Hatalı olan -Wextra bayrağını MSVC uyumlu hale getirmek için dosyayı geçici olarak düzenliyoruz
+          (Get-Content $cmakeFile.FullName) -replace '-Wextra', '/W4' | Set-Content $cmakeFile.FullName
           
           $wv2_dir = Get-ChildItem -Directory -Path "packages/Microsoft.Web.WebView2.*" | Select-Object -First 1
           $wv2_path = $wv2_dir.FullName
           
+          # WebView2_FOUND değerini zorunlu kılıp yolları netleştiriyoruz
           cmake -S "$sourceDir" -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -A x64 `
+            "-DWebView2_FOUND=TRUE" `
             "-DWebView2_INCLUDE_DIR=$wv2_path/build/native/include" `
             "-DWebView2_LIBRARIES=$wv2_path/build/native/x64/WebView2Loader.dll.lib"
 
@@ -59,19 +58,25 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path "dist"
           
-          # Çıktı dosyasını kopyala
+          # Binary dosyasını kontrol et ve kopyala
           if (Test-Path "build/bin/Release/FewMB.exe") {
             Copy-Item "build/bin/Release/FewMB.exe" -Destination "dist/"
+          } elseif (Test-Path "build/Release/FewMB.exe") {
+            Copy-Item "build/Release/FewMB.exe" -Destination "dist/"
           }
           
-          # Bağımlı DLL'i ekle
           $dll = Get-ChildItem -Path "packages" -Recurse -Filter "WebView2Loader.dll" | Where-Object { $_.FullName -like "*x64*" } | Select-Object -First 1
           if ($dll) { Copy-Item $dll.FullName -Destination "dist/" }
           
-          Compress-Archive -Path "dist/*" -DestinationPath "FewMB-Windows-x64-Release.zip" -Force
+          if (Test-Path "dist/FewMB.exe") {
+            Compress-Archive -Path "dist/*" -DestinationPath "FewMB-Windows-x64.zip" -Force
+          } else {
+            Write-Error "Build basarili oldu ama EXE bulunamadi!"
+            exit 1
+          }
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: FewMB-Windows-Binary
-          path: FewMB-Windows-x64-Release.zip
+          path: FewMB-Windows-x64.zip
