@@ -1,0 +1,87 @@
+name: Build FewMB
+
+on:
+  push:
+    branches: [ main ]
+  tags:
+    - 'v*'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  PROJECT_NAME: FewMB
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: egorBaykov/setup-msvc@v1
+        with:
+          arch: x64
+
+      - name: Get CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path build
+          Set-Location build
+          cmake .. -DCMAKE_BUILD_TYPE=Release -A x64
+
+      - name: Build
+        shell: pwsh
+        run: |
+          Set-Location build
+          cmake --build . --config Release -j$(nproc) 2>&1
+
+      - name: Copy Runtime DLLs
+        shell: pwsh
+        run: |
+          $wv2Path = "C:\Program Files (x86)\Microsoft\EdgeWebView\Application"
+          if (Test-Path $wv2Path) {
+            Copy-Item "$wv2Path\WebView2Loader.dll" "build\bin\Release\" -ErrorAction SilentlyContinue
+          }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "build\bin\Release\*" -DestinationPath "FewMB-Windows-x64.zip" -Force
+          Write-Host "##[group]Artifact"
+          Write-Host "File: FewMB-Windows-x64.zip"
+          Write-Host "Size: $((Get-Item 'FewMB-Windows-x64.zip').Length / 1MB) MB"
+          Write-Host "##[endgroup]"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FewMB-Windows-x64
+          path: FewMB-Windows-x64.zip
+
+  release:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: FewMB-Windows-x64
+          path: .
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: FewMB-Windows-x64.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
