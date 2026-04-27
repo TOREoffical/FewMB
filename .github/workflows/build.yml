@@ -18,45 +18,55 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1 # Daha güncel ve stabil bir alternatif
+        uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+
+      - name: Install WebView2 SDK
+        shell: pwsh
+        run: |
+          # WebView2 paketini indiriyoruz çünkü standart imajda eksik olabilir
+          nuget install Microsoft.Web.WebView2 -OutputDirectory packages
 
       - name: Configure CMake
         shell: pwsh
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -A x64
+          # NuGet paketinin yolunu CMake'e tanıtıyoruz
+          $wv2_dir = Get-ChildItem -Directory -Path "packages/Microsoft.Web.WebView2.*" | Select-Object -First 1
+          $wv2_path = $wv2_dir.FullName
+          
+          cmake -S . -B build `
+            -DCMAKE_BUILD_TYPE=Release `
+            -A x64 `
+            "-DWebView2_INCLUDE_DIR=$wv2_path/build/native/include" `
+            "-DWebView2_LIBRARIES=$wv2_path/build/native/x64/WebView2Loader.dll.lib"
 
       - name: Build
         shell: pwsh
         run: |
-          # Windows'ta paralel build için NUMBER_OF_PROCESSORS kullanılır
           cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
 
-      - name: Copy Runtime DLLs
+      - name: Prepare Artifacts
         shell: pwsh
         run: |
-          # Dizin yoksa oluştur (hata almamak için)
-          New-Item -ItemType Directory -Force -Path build/bin/Release
-          $wv2Path = "C:\Program Files (x86)\Microsoft\EdgeWebView\Application"
-          if (Test-Path $wv2Path) {
-             # En güncel klasörü bulup içinden DLL'i alıyoruz
-             $dll = Get-ChildItem -Path $wv2Path -Recurse -Filter "WebView2Loader.dll" | Select-Object -First 1
-             if ($dll) { Copy-Item $dll.FullName "build/bin/Release/" }
+          # Çıktı klasörünü oluştur
+          New-Item -ItemType Directory -Force -Path "dist"
+          
+          # Çalıştırılabilir dosyayı kopyala
+          Copy-Item "build/bin/Release/FewMB.exe" -Destination "dist/" -ErrorAction Continue
+          
+          # Gerekli WebView2 DLL'ini bul ve yanına koy
+          $wv2_dll = Get-ChildItem -Path "packages/Microsoft.Web.WebView2.*" -Recurse -Filter "WebView2Loader.dll" | Where-Object { $_.FullName -like "*x64*" } | Select-Object -First 1
+          if ($wv2_dll) {
+            Copy-Item $wv2_dll.FullName -Destination "dist/"
           }
-
-      - name: Package
-        shell: pwsh
-        run: |
-          # Klasörün varlığından emin olalım
-          if (Test-Path "build/bin/Release") {
-            Compress-Archive -Path "build/bin/Release/*" -DestinationPath "FewMB-Windows-x64.zip" -Force
-          } else {
-            Write-Error "Build output directory not found!"
-            exit 1
-          }
+          
+          # Paketi sıkıştır
+          Compress-Archive -Path "dist/*" -DestinationPath "FewMB-Windows-x64.zip" -Force
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -77,7 +87,7 @@ jobs:
           name: FewMB-Windows-x64
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2 # v2'ye güncellendi
+        uses: softprops/action-gh-release@v2
         with:
           files: FewMB-Windows-x64.zip
           draft: false
