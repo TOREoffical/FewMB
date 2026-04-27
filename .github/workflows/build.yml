@@ -3,10 +3,6 @@ name: Build FewMB
 on:
   push:
     branches: [ main ]
-    tags:
-      - 'v*'
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -16,6 +12,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Extract Project Files
+        shell: pwsh
+        run: |
+          # Ana dizindeki tüm .zip dosyalarını bul ve 'project_files' klasörüne çıkart
+          $zipFile = Get-ChildItem -Filter "*.zip" | Select-Object -First 1
+          if ($zipFile) {
+            Expand-Archive -Path $zipFile.FullName -DestinationPath "project_source" -Force
+            Write-Host "Dosyalar project_source klasörüne çıkartıldı."
+          } else {
+            Write-Warning "Ana dizinde zip dosyası bulunamadı, mevcut dosyalarla devam ediliyor."
+          }
+
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -23,23 +31,19 @@ jobs:
 
       - name: Install WebView2 SDK
         shell: pwsh
-        run: |
-          # WebView2 paketini nuget üzerinden indiriyoruz
-          nuget install Microsoft.Web.WebView2 -OutputDirectory packages
+        run: nuget install Microsoft.Web.WebView2 -OutputDirectory packages
 
       - name: Configure CMake
         shell: pwsh
         run: |
-          # Projenin nerede olduğunu (alt klasör ihtimaline karşı) otomatik bulalım
+          # CMakeLists.txt dosyasını çıkartılan klasörde ara
           $cmakeFile = Get-ChildItem -Recurse -Filter "CMakeLists.txt" | Select-Object -First 1
-          if (-not $cmakeFile) { throw "CMakeLists.txt bulunamadı!" }
+          if (-not $cmakeFile) { throw "HATA: Zip içinden CMakeLists.txt çıkmadı!" }
           $sourceDir = $cmakeFile.Directory.FullName
           
-          # İndirdiğimiz WebView2 klasörünü bulalım
           $wv2_dir = Get-ChildItem -Directory -Path "packages/Microsoft.Web.WebView2.*" | Select-Object -First 1
           $wv2_path = $wv2_dir.FullName
           
-          # CMake'e hem kaynak dizini hem de WebView2 yollarını veriyoruz
           cmake -S "$sourceDir" -B build `
             -DCMAKE_BUILD_TYPE=Release `
             -A x64 `
@@ -50,40 +54,24 @@ jobs:
         shell: pwsh
         run: cmake --build build --config Release -j $env:NUMBER_OF_PROCESSORS
 
-      - name: Prepare Package
+      - name: Prepare Artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "dist"
           
-          # EXE dosyasını kopyala (CMakeLists'te bin klasörüne çıkacak şekilde ayarlı)
-          Copy-Item "build/bin/Release/FewMB.exe" -Destination "dist/"
+          # Çıktı dosyasını kopyala
+          if (Test-Path "build/bin/Release/FewMB.exe") {
+            Copy-Item "build/bin/Release/FewMB.exe" -Destination "dist/"
+          }
           
-          # WebView2Loader.dll dosyasını bul ve yanına koy (Çalışması için şart)
+          # Bağımlı DLL'i ekle
           $dll = Get-ChildItem -Path "packages" -Recurse -Filter "WebView2Loader.dll" | Where-Object { $_.FullName -like "*x64*" } | Select-Object -First 1
-          Copy-Item $dll.FullName -Destination "dist/"
+          if ($dll) { Copy-Item $dll.FullName -Destination "dist/" }
           
-          Compress-Archive -Path "dist/*" -DestinationPath "FewMB-Windows-x64.zip" -Force
+          Compress-Archive -Path "dist/*" -DestinationPath "FewMB-Windows-x64-Release.zip" -Force
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: FewMB-Windows-x64
-          path: FewMB-Windows-x64.zip
-
-  release:
-    needs: build-windows
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-    steps:
-      - name: Download
-        uses: actions/download-artifact@v4
-        with:
-          name: FewMB-Windows-x64
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: FewMB-Windows-x64.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: FewMB-Windows-Binary
+          path: FewMB-Windows-x64-Release.zip
